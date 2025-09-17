@@ -1,0 +1,264 @@
+/* === ONE-SHOT DDL/DML: ALL IN mydb === */
+USE mydb;
+
+-- DROP (views -> FKs -> tables)
+DROP VIEW IF EXISTS V_NEWS_DUP_URLS;
+DROP VIEW IF EXISTS V_NEWS_LATEST_TOP50;
+DROP VIEW IF EXISTS V_HISTORY_BASE;
+
+DROP TABLE IF EXISTS NEWS_ARTICLE_TAG;
+DROP TABLE IF EXISTS NEWS_TAG;
+DROP TABLE IF EXISTS NEWS_ARTICLE;
+DROP TABLE IF EXISTS GLOSSARY;
+
+DROP TABLE IF EXISTS SIMULATION_HISTORY;
+DROP TABLE IF EXISTS MEMBER_AUTH;
+DROP TABLE IF EXISTS PERSISTENT_LOGINS;
+DROP TABLE IF EXISTS MEMBERS;
+
+/* ========== MEMBERS ========== */
+CREATE TABLE MEMBERS (
+  MEMBER_NO            BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '회원 고유 ID',
+  MEMBER_ID            VARCHAR(50)  NOT NULL UNIQUE COMMENT '로그인 ID',
+  MEMBER_PWD           VARCHAR(255) NOT NULL COMMENT '비밀번호(해시)',
+  MEMBER_NAME          VARCHAR(100) NOT NULL COMMENT '사용자 이름',
+  MEMBER_EMAIL         VARCHAR(100) NOT NULL UNIQUE COMMENT '회원 이메일',
+  MEMBER_ROLE          VARCHAR(20)  DEFAULT 'USER' COMMENT '권한(USER/ADMIN)',
+  MEMBER_CREATED_AT    TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '가입일시',
+  MEMBER_UPDATED_AT    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '정보 수정일시',
+  MEMBER_LAST_LOGIN_AT TIMESTAMP NULL COMMENT '최근 로그인 시간',
+  MEMBER_IS_ACTIVE     TINYINT(1)  DEFAULT 1 COMMENT '계정 활성 여부',
+  MEMBER_DELETED_AT    TIMESTAMP NULL COMMENT '계정 삭제 시간'
+) COMMENT='회원 정보 테이블';
+
+CREATE INDEX IDX_MEMBERS_DELETED_AT ON MEMBERS (MEMBER_DELETED_AT);
+
+/* ========== PERSISTENT_LOGINS ========== */
+CREATE TABLE PERSISTENT_LOGINS (
+  USERNAME  VARCHAR(64) NOT NULL,
+  SERIES    VARCHAR(64) PRIMARY KEY,
+  TOKEN     VARCHAR(64) NOT NULL,
+  LAST_USED TIMESTAMP NOT NULL,
+  INDEX IDX_PLOGIN_USERNAME (USERNAME),
+  CONSTRAINT FK_PLOGIN_MEMBER FOREIGN KEY (USERNAME) REFERENCES MEMBERS (MEMBER_ID) ON DELETE CASCADE
+) COMMENT='스프링 remember-me 토큰';
+
+/* ========== MEMBER_AUTH ========== */
+CREATE TABLE MEMBER_AUTH (
+  NO         BIGINT NOT NULL AUTO_INCREMENT,
+  MEMBER_ID  VARCHAR(50) NOT NULL,
+  AUTH       VARCHAR(100) NOT NULL,
+  PRIMARY KEY (NO),
+  CONSTRAINT FK_AUTH_MEMBER FOREIGN KEY (MEMBER_ID) REFERENCES MEMBERS (MEMBER_ID) ON DELETE CASCADE
+) COMMENT='회원 권한';
+
+/* ========== SIMULATION_HISTORY ========== */
+CREATE TABLE SIMULATION_HISTORY (
+  HISTORY_NO      BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '이력 고유 ID',
+  MEMBER_NO       BIGINT NOT NULL COMMENT '회원 PK(FK)',
+  HISTORY_DATE    DATE   NOT NULL COMMENT '실행 날짜',
+  HISTORY_TYPE    VARCHAR(20) NOT NULL DEFAULT '매수' COMMENT '거래 타입(매수/매도)',
+  HISTORY_PREDICT VARCHAR(20) NULL COMMENT '예측(상승/하락)',
+  HISTORY_RESULT  VARCHAR(20) NULL COMMENT '실제(NULL=미풀이)',
+  PNL             DECIMAL(10,2) NULL COMMENT '손익',
+  FAVORITE        TINYINT(1) NOT NULL DEFAULT 0 COMMENT '즐겨찾기',
+  TAGS            VARCHAR(255) NULL COMMENT '태그 콤마 구분',
+  NOTE            TEXT NULL COMMENT '메모',
+  CREATED_AT      TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '생성 시각',
+  CONSTRAINT FK_HIST_MEMBER FOREIGN KEY (MEMBER_NO) REFERENCES MEMBERS (MEMBER_NO) ON DELETE CASCADE
+) COMMENT='회원별 시뮬레이션 이력';
+
+
+/* ========== VIEW: 통계 ========== */
+CREATE OR REPLACE VIEW V_HISTORY_BASE AS
+SELECT
+  H.HISTORY_NO, H.MEMBER_NO, H.HISTORY_DATE,
+  H.HISTORY_PREDICT, H.HISTORY_RESULT, H.PNL, H.FAVORITE, H.TAGS, H.NOTE,
+  (H.HISTORY_RESULT IS NULL)                                               AS IS_UNSOLVED,
+  (H.HISTORY_RESULT IS NOT NULL AND H.HISTORY_RESULT = H.HISTORY_PREDICT)  AS IS_CORRECT,
+  (H.HISTORY_RESULT IS NOT NULL AND H.HISTORY_RESULT <> H.HISTORY_PREDICT) AS IS_WRONG
+FROM SIMULATION_HISTORY H;
+
+/* ========== EVENT (권한 없으면 주석 유지) ========== */
+-- CREATE EVENT IF NOT EXISTS EV_PURGE_MEMBERS
+-- ON SCHEDULE EVERY 1 DAY
+-- STARTS (CURRENT_DATE + INTERVAL 3 HOUR + INTERVAL 10 MINUTE)
+-- ON COMPLETION PRESERVE
+-- DO
+--   DELETE FROM MEMBERS
+--    WHERE MEMBER_IS_ACTIVE = 0
+--      AND MEMBER_DELETED_AT < DATE_SUB(NOW(), INTERVAL 30 DAY);
+
+/* ========== GLOSSARY ========== */
+CREATE TABLE GLOSSARY (
+  GLOSSARY_ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+  TERM        VARCHAR(200)  NOT NULL,
+  SLUG        VARCHAR(220)  NOT NULL,
+  SHORT_DEF   VARCHAR(500)  NOT NULL,
+  FULL_DEF    LONGTEXT,
+  SOURCE      VARCHAR(200),
+  TAGS        JSON,
+  CREATED_AT  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UPDATED_AT  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT UQ_GLOSSARY_SLUG UNIQUE (SLUG)
+) COMMENT='금 투자 용어 사전';
+
+
+/* ========== NEWS_ARTICLE ========== */
+CREATE TABLE NEWS_ARTICLE (
+  ARTICLE_ID   BIGINT PRIMARY KEY AUTO_INCREMENT,
+  TITLE        VARCHAR(300) NOT NULL,
+  URL          VARCHAR(500) NOT NULL,
+  SOURCE       VARCHAR(120),
+  PUBLISHED_AT DATETIME NOT NULL,
+  SUMMARY      LONGTEXT,
+  SENTIMENT    ENUM('NEG','NEU','POS') DEFAULT 'NEU',
+  TAGS         JSON,
+  RANK_SCORE   FLOAT NOT NULL DEFAULT 0,
+  CREATED_AT   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UPDATED_AT   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT UQ_NEWS_URL UNIQUE (URL)
+) COMMENT='선정/요약된 금 관련 뉴스';
+
+
+/* ========== NEWS_TAG ========== */
+CREATE TABLE NEWS_TAG (
+  TAG_ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+  NAME   VARCHAR(60) NOT NULL,
+  CONSTRAINT UQ_NEWS_TAG_NAME UNIQUE (NAME)
+) COMMENT='뉴스 태그 마스터';
+
+/* ========== NEWS_ARTICLE_TAG ========== */
+CREATE TABLE NEWS_ARTICLE_TAG (
+  ARTICLE_ID BIGINT NOT NULL,
+  TAG_ID     BIGINT NOT NULL,
+  PRIMARY KEY (ARTICLE_ID, TAG_ID),
+  CONSTRAINT FK_NAT_ARTICLE FOREIGN KEY (ARTICLE_ID) REFERENCES NEWS_ARTICLE (ARTICLE_ID) ON DELETE CASCADE,
+  CONSTRAINT FK_NAT_TAG     FOREIGN KEY (TAG_ID)     REFERENCES NEWS_TAG     (TAG_ID)     ON DELETE CASCADE
+) COMMENT='뉴스-태그 매핑';
+
+/* ========== VIEWS (뉴스) ========== */
+CREATE OR REPLACE VIEW V_NEWS_LATEST_TOP50 AS
+SELECT ARTICLE_ID, TITLE, URL, SOURCE, PUBLISHED_AT, SUMMARY, SENTIMENT, TAGS, RANK_SCORE
+FROM NEWS_ARTICLE
+ORDER BY PUBLISHED_AT DESC, ARTICLE_ID DESC
+LIMIT 50;
+
+CREATE OR REPLACE VIEW V_NEWS_DUP_URLS AS
+SELECT URL, COUNT(*) AS CNT
+FROM NEWS_ARTICLE
+GROUP BY URL
+HAVING COUNT(*) > 1;
+
+/* ========== DUMMY DATA ========== */
+INSERT INTO MEMBERS (MEMBER_ID, MEMBER_PWD, MEMBER_NAME, MEMBER_EMAIL, MEMBER_ROLE, MEMBER_LAST_LOGIN_AT) VALUES
+('SEUNGHI', '$2a$10$sRMTjzKJ1sqpWKjC8euuvOvcpbqKDmX7YAAKpMFyDp5Q7Cvezlcb2', '최승희', 'SEUNGHI@EXAMPLE.COM', 'ADMIN', NOW()),
+('TEAM1',   '$2a$10$vdUuI8JekRFqUdSBpNefHOzUKZHE85Gt9be4OkUXBnn6GXXIX6gKu', '홍길동', 'TEAM1@EXAMPLE.COM',   'USER',  NOW()),
+('TEAM2',   '$2a$10$4Grg4u6hclk0UrqdWcfCcOLsSVMKPfXQJ/mGw5vZPaMt1zoOE4n9e', '김영희', 'TEAM2@EXAMPLE.COM',   'USER',  NULL),
+('GUEST1',  '$2a$10$bX0V/SzsivyXZ2b6rYfWkOqcmZ8BE9zz0MgCsBSce0qxYe0h6Z4T6', '게스트', 'GUEST1@EXAMPLE.COM',  'USER',  NULL);
+
+INSERT INTO SIMULATION_HISTORY (MEMBER_NO, HISTORY_DATE, HISTORY_PREDICT, HISTORY_RESULT, PNL, FAVORITE, TAGS, NOTE) VALUES
+(1, '2023-01-02', '상승', '상승',  1.20, 0, '금리,뉴스긍정', NULL),
+(5, '2023-01-03', '하락', '상승', -0.80, 1, '이벤트', '변동성 급증'),
+(2, '2023-01-02', '상승', '하락', -1.10, 0, NULL, NULL),
+(2, '2024-01-03', '하락', '하락',  0.50, 0, NULL, NULL),
+(5, '2024-01-04', '상승', '상승',  0.70, 0, NULL, NULL),
+(5, '2024-01-05', '하락', '하락',  0.30, 0, NULL, NULL);
+
+
+
+/* ========== DUMMY DATA FOR MEMBER_NO=5 (2023-01-01 ~ 2024-12-31) ========== */
+INSERT INTO SIMULATION_HISTORY
+(MEMBER_NO, HISTORY_DATE, HISTORY_TYPE, HISTORY_PREDICT, HISTORY_RESULT, PNL, FAVORITE, TAGS, NOTE)
+VALUES
+-- 2023년 1월
+(5, '2023-01-02', '매수', '상승', '상승', 0.50, 0, '뉴스긍정', '초반 상승'),
+(5, '2023-01-03', '매도', '하락', '상승', -0.40, 0, '정책', '예상 빗나감'),
+(5, '2023-01-04', '매수', '상승', '하락', -0.70, 0, '실적', '실망 매도'),
+(5, '2023-01-05', '매수', '상승', '상승', 0.80, 0, '뉴스긍정', '상승 초입'),
+(5, '2023-01-06', '매도', '하락', '하락', 0.30, 0, '차트패턴', '기술적 하락'),
+(5, '2023-01-09', '매수', '상승', '상승', 1.10, 0, '거시경제', '금리 호재'),
+(5, '2023-01-10', '매도', '하락', '상승', -0.60, 0, NULL, NULL),
+(5, '2023-01-11', '매수', '상승', '상승', 0.40, 0, '뉴스긍정', NULL),
+(5, '2023-01-12', '매도', '하락', '하락', 0.50, 0, '기술적분석', '단기 조정'),
+(5, '2023-01-13', '매수', '상승', '하락', -0.80, 0, '실적', '하락 반전'),
+(5, '2023-01-16', '매도', '하락', '하락', 0.70, 0, '정책', '정책 반영'),
+(5, '2023-01-17', '매수', '상승', '상승', 0.60, 0, '뉴스긍정', '호재'),
+(5, '2023-01-18', '매도', '하락', '상승', -0.50, 0, '이벤트', '돌발 변수'),
+(5, '2023-01-19', '매수', '상승', '상승', 0.90, 0, '뉴스긍정', NULL),
+(5, '2023-01-20', '매도', '하락', '하락', 0.40, 0, '기술적분석', '추세 유지'),
+(5, '2023-01-25', '매수', '상승', '하락', -1.00, 0, '실적', '예상 실패'),
+(5, '2023-01-26', '매도', '하락', '하락', 0.50, 0, NULL, NULL),
+(5, '2023-01-27', '매수', '상승', '상승', 1.20, 0, '뉴스긍정', '급등세'),
+(5, '2023-01-30', '매도', '하락', '상승', -0.60, 0, '정책', '예상 빗나감'),
+(5, '2023-01-31', '매수', '상승', '상승', 0.70, 0, '차트패턴', NULL),
+-- 2023년 2월
+(5, '2023-02-01', '매도', '하락', '하락', 0.40, 0, '기술적분석', NULL),
+(5, '2023-02-02', '매수', '상승', '상승', 0.80, 0, '뉴스긍정', '긍정 기사'),
+(5, '2023-02-03', '매도', '하락', '상승', -0.70, 0, '정책', NULL),
+(5, '2023-02-06', '매수', '상승', '상승', 0.60, 0, '거시경제', '완화 기대'),
+(5, '2023-02-07', '매도', '하락', '하락', 0.50, 0, NULL, NULL),
+(5, '2023-02-08', '매수', '상승', '하락', -0.90, 0, '실적', NULL),
+(5, '2023-02-09', '매도', '하락', '하락', 0.40, 0, '기술적분석', '단기 하락'),
+(5, '2023-02-10', '매수', '상승', '상승', 0.70, 0, '뉴스긍정', NULL),
+(5, '2023-02-13', '매도', '하락', '상승', -0.60, 0, '정책', NULL),
+(5, '2023-02-14', '매수', '상승', '상승', 0.80, 0, '뉴스긍정', '밸런타인데이 반등'),
+(5, '2023-02-15', '매도', '하락', '하락', 0.50, 0, NULL, NULL),
+(5, '2023-02-16', '매수', '상승', '하락', -0.70, 0, '실적', NULL),
+(5, '2023-02-17', '매도', '하락', '하락', 0.40, 0, '차트패턴', '저항 돌파 실패'),
+-- 2024년 5월~6
+(5, '2024-05-20', '매수', '상승', '상승', 0.90, 0, '뉴스긍정', NULL),
+(5, '2024-05-21', '매도', '하락', '상승', -0.40, 0, '정책', NULL),
+(5, '2024-05-22', '매수', '상승', '상승', 1.10, 0, '거시경제', '금리 인하'),
+(5, '2024-05-23', '매도', '하락', '하락', 0.30, 0, NULL, NULL),
+(5, '2024-05-24', '매수', '상승', '하락', -0.80, 0, '실적', NULL),
+(5, '2024-05-27', '매도', '하락', '하락', 0.60, 0, '기술적분석', NULL),
+(5, '2024-05-28', '매수', '상승', '상승', 0.70, 0, '뉴스긍정', NULL),
+(5, '2024-05-29', '매도', '하락', '상승', -0.50, 0, '정책', NULL),
+(5, '2024-05-30', '매수', '상승', '상승', 0.80, 0, NULL, NULL),
+(5, '2024-05-31', '매도', '하락', '하락', 0.40, 0, '차트패턴', NULL),
+(5, '2024-06-03', '매수', '상승', '상승', 1.00, 0, '거시경제', NULL),
+(5, '2024-06-04', '매도', '하락', '상승', -0.60, 0, '이벤트', NULL),
+(5, '2024-06-05', '매수', '상승', '상승', 0.90, 0, '뉴스긍정', NULL),
+(5, '2024-06-07', '매도', '하락', '하락', 0.40, 0, NULL, NULL),
+(5, '2024-06-10', '매수', '상승', '상승', 0.70, 0, '실적', NULL),
+(5, '2024-06-11', '매도', '하락', '상승', -0.50, 0, '정책', NULL),
+(5, '2024-06-12', '매수', '상승', '상승', 0.80, 0, '뉴스긍정', NULL),
+(5, '2024-06-13', '매도', '하락', '하락', 0.30, 0, '기술적분석', NULL),
+-- 2024년 12월
+(5, '2024-12-10', '매수', '상승', '상승', 1.20, 0, NULL, '연말 랠리'),
+(5, '2024-12-11', '매도', '하락', '상승', -0.60, 0, '정책', NULL),
+(5, '2024-12-12', '매수', '상승', '상승', 0.90, 0, '뉴스긍정', NULL),
+(5, '2024-12-13', '매도', '하락', '하락', 0.40, 0, NULL, NULL),
+(5, '2024-12-16', '매수', '상승', '하락', -0.80, 0, '실적', NULL),
+(5, '2024-12-17', '매도', '하락', '하락', 0.50, 0, '기술적분석', NULL),
+(5, '2024-12-18', '매수', '상승', '상승', 0.70, 0, '뉴스긍정', NULL),
+(5, '2024-12-19', '매도', '하락', '상승', -0.40, 0, '정책', NULL),
+(5, '2024-12-20', '매도', '하락', '하락', 0.30, 0, '거시경제', '안정적 흐름'),
+(5, '2024-12-23', '매수', '상승', '상승', 1.00, 0, '뉴스긍정', NULL),
+(5, '2024-12-24', '매도', '하락', '상승', -0.70, 0, '이벤트', NULL),
+(5, '2024-12-26', '매수', '상승', '상승', 0.80, 0, '뉴스긍정', NULL),
+(5, '2024-12-27', '매도', '하락', '하락', 0.40, 0, NULL, NULL),
+(5, '2024-12-30', '매수', '상승', '상승', 1.10, 0, '거시경제', '연말 마무리');
+
+
+
+
+CREATE TABLE QUOTES_DAILY (
+  Date         DATE NOT NULL PRIMARY KEY,
+  KRW_G_OPEN   DOUBLE,
+  KRW_G_CLOSE  DOUBLE,
+  USD_OZ_OPEN  DOUBLE,
+  USD_OZ_CLOSE DOUBLE,
+  VIX          DOUBLE,
+  ETF_VOLUME   DOUBLE,
+  FX_RATE      DOUBLE
+) COMMENT='시세 데이터';
+
+
+/*mysql workbench -> navigator -> schemas -> tables -> table data import wizard로 데이터 추가(gold_input_data.csv)*/
+SELECT COUNT(*) FROM QUOTES_DAILY; -- 2452
+
+SELECT COUNT(*) FROM QUOTES_DAILY 
+ WHERE DATE BETWEEN '2023-01-01' AND '2024-12-31'; -- 488
+ 
